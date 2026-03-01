@@ -2239,11 +2239,14 @@ mod tests {
 
     #[test]
     fn build_user_parts_multiple_images() {
-        let input = "Compare [IMAGE:data:image/png;base64,AAAA] and [IMAGE:data:image/webp;base64,BBBB]";
+        let input =
+            "Compare [IMAGE:data:image/png;base64,AAAA] and [IMAGE:data:image/webp;base64,BBBB]";
         let parts = build_user_parts(input);
         assert_eq!(parts.len(), 3);
-        let json: Vec<serde_json::Value> =
-            parts.iter().map(|p| serde_json::to_value(p).unwrap()).collect();
+        let json: Vec<serde_json::Value> = parts
+            .iter()
+            .map(|p| serde_json::to_value(p).unwrap())
+            .collect();
         assert_eq!(json[0], serde_json::json!({"text": "Compare  and"}));
         assert_eq!(
             json[1],
