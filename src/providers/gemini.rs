@@ -135,8 +135,22 @@ struct Content {
 }
 
 #[derive(Debug, Serialize, Clone)]
-struct Part {
-    text: String,
+#[serde(untagged)]
+enum Part {
+    Text {
+        text: String,
+    },
+    InlineData {
+        #[serde(rename = "inlineData")]
+        inline_data: InlineData,
+    },
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct InlineData {
+    #[serde(rename = "mimeType")]
+    mime_type: String,
+    data: String,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -1143,6 +1157,42 @@ impl GeminiProvider {
     }
 }
 
+/// Build a `Vec<Part>` from user message content, extracting any `[IMAGE:...]`
+/// markers into `Part::InlineData` entries.  Upstream
+/// `multimodal::prepare_messages_for_provider` already normalises local files
+/// and remote URLs into `data:` URIs before messages reach the provider.
+fn build_user_parts(content: &str) -> Vec<Part> {
+    let (text_part, image_refs) = crate::multimodal::parse_image_markers(content);
+    let mut parts = Vec::new();
+
+    if !text_part.trim().is_empty() {
+        parts.push(Part::Text { text: text_part });
+    }
+
+    for marker in &image_refs {
+        if let Some(rest) = marker.strip_prefix("data:") {
+            if let Some((mime, b64)) = rest.split_once(";base64,") {
+                parts.push(Part::InlineData {
+                    inline_data: InlineData {
+                        mime_type: mime.to_string(),
+                        data: b64.to_string(),
+                    },
+                });
+            }
+        }
+    }
+
+    // Fallback: if no parts were produced (e.g. markers were present but
+    // unparseable), keep the original content as plain text.
+    if parts.is_empty() {
+        parts.push(Part::Text {
+            text: content.to_string(),
+        });
+    }
+
+    parts
+}
+
 #[async_trait]
 impl Provider for GeminiProvider {
     async fn chat_with_system(
@@ -1154,16 +1204,14 @@ impl Provider for GeminiProvider {
     ) -> anyhow::Result<String> {
         let system_instruction = system_prompt.map(|sys| Content {
             role: None,
-            parts: vec![Part {
+            parts: vec![Part::Text {
                 text: sys.to_string(),
             }],
         });
 
         let contents = vec![Content {
             role: Some("user".to_string()),
-            parts: vec![Part {
-                text: message.to_string(),
-            }],
+            parts: build_user_parts(message),
         }];
 
         let (text, _usage) = self
@@ -1189,16 +1237,14 @@ impl Provider for GeminiProvider {
                 "user" => {
                     contents.push(Content {
                         role: Some("user".to_string()),
-                        parts: vec![Part {
-                            text: msg.content.clone(),
-                        }],
+                        parts: build_user_parts(&msg.content),
                     });
                 }
                 "assistant" => {
                     // Gemini API uses "model" role instead of "assistant"
                     contents.push(Content {
                         role: Some("model".to_string()),
-                        parts: vec![Part {
+                        parts: vec![Part::Text {
                             text: msg.content.clone(),
                         }],
                     });
@@ -1212,7 +1258,7 @@ impl Provider for GeminiProvider {
         } else {
             Some(Content {
                 role: None,
-                parts: vec![Part {
+                parts: vec![Part::Text {
                     text: system_parts.join("\n\n"),
                 }],
             })
@@ -1238,13 +1284,11 @@ impl Provider for GeminiProvider {
                 "system" => system_parts.push(&msg.content),
                 "user" => contents.push(Content {
                     role: Some("user".to_string()),
-                    parts: vec![Part {
-                        text: msg.content.clone(),
-                    }],
+                    parts: build_user_parts(&msg.content),
                 }),
                 "assistant" => contents.push(Content {
                     role: Some("model".to_string()),
-                    parts: vec![Part {
+                    parts: vec![Part::Text {
                         text: msg.content.clone(),
                     }],
                 }),
@@ -1257,7 +1301,7 @@ impl Provider for GeminiProvider {
         } else {
             Some(Content {
                 role: None,
-                parts: vec![Part {
+                parts: vec![Part::Text {
                     text: system_parts.join("\n\n"),
                 }],
             })
@@ -1545,7 +1589,7 @@ mod tests {
         let body = GenerateContentRequest {
             contents: vec![Content {
                 role: Some("user".into()),
-                parts: vec![Part {
+                parts: vec![Part::Text {
                     text: "hello".into(),
                 }],
             }],
@@ -1586,7 +1630,7 @@ mod tests {
         let body = GenerateContentRequest {
             contents: vec![Content {
                 role: Some("user".into()),
-                parts: vec![Part {
+                parts: vec![Part::Text {
                     text: "hello".into(),
                 }],
             }],
@@ -1630,7 +1674,7 @@ mod tests {
         let body = GenerateContentRequest {
             contents: vec![Content {
                 role: Some("user".into()),
-                parts: vec![Part {
+                parts: vec![Part::Text {
                     text: "hello".into(),
                 }],
             }],
@@ -1662,13 +1706,13 @@ mod tests {
         let request = GenerateContentRequest {
             contents: vec![Content {
                 role: Some("user".to_string()),
-                parts: vec![Part {
+                parts: vec![Part::Text {
                     text: "Hello".to_string(),
                 }],
             }],
             system_instruction: Some(Content {
                 role: None,
-                parts: vec![Part {
+                parts: vec![Part::Text {
                     text: "You are helpful".to_string(),
                 }],
             }),
@@ -1696,7 +1740,7 @@ mod tests {
             request: InternalGenerateContentRequest {
                 contents: vec![Content {
                     role: Some("user".to_string()),
-                    parts: vec![Part {
+                    parts: vec![Part::Text {
                         text: "Hello".to_string(),
                     }],
                 }],
@@ -1728,7 +1772,7 @@ mod tests {
             request: InternalGenerateContentRequest {
                 contents: vec![Content {
                     role: Some("user".to_string()),
-                    parts: vec![Part {
+                    parts: vec![Part::Text {
                         text: "Hello".to_string(),
                     }],
                 }],
@@ -1751,7 +1795,7 @@ mod tests {
             request: InternalGenerateContentRequest {
                 contents: vec![Content {
                     role: Some("user".to_string()),
-                    parts: vec![Part {
+                    parts: vec![Part::Text {
                         text: "Hello".to_string(),
                     }],
                 }],
@@ -2141,5 +2185,96 @@ mod tests {
         let result = provider.warmup().await;
         // Should succeed without making HTTP requests
         assert!(result.is_ok());
+    }
+
+    // ── Image / multimodal part tests ─────────────────────────────────────
+
+    #[test]
+    fn text_part_serializes_correctly() {
+        let part = Part::Text {
+            text: "hello".to_string(),
+        };
+        let json = serde_json::to_value(&part).unwrap();
+        assert_eq!(json, serde_json::json!({"text": "hello"}));
+    }
+
+    #[test]
+    fn inline_data_part_serializes_correctly() {
+        let part = Part::InlineData {
+            inline_data: InlineData {
+                mime_type: "image/png".to_string(),
+                data: "iVBORw0KGgo=".to_string(),
+            },
+        };
+        let json = serde_json::to_value(&part).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"inlineData": {"mimeType": "image/png", "data": "iVBORw0KGgo="}})
+        );
+    }
+
+    #[test]
+    fn build_user_parts_text_only() {
+        let parts = build_user_parts("plain text message");
+        assert_eq!(parts.len(), 1);
+        let json = serde_json::to_value(&parts[0]).unwrap();
+        assert_eq!(json, serde_json::json!({"text": "plain text message"}));
+    }
+
+    #[test]
+    fn build_user_parts_single_image() {
+        let input = "Describe this [IMAGE:data:image/jpeg;base64,/9j/4AAQ]";
+        let parts = build_user_parts(input);
+        assert_eq!(parts.len(), 2);
+        // First part: text
+        let text_json = serde_json::to_value(&parts[0]).unwrap();
+        assert_eq!(text_json, serde_json::json!({"text": "Describe this"}));
+        // Second part: inline image
+        let img_json = serde_json::to_value(&parts[1]).unwrap();
+        assert_eq!(
+            img_json,
+            serde_json::json!({"inlineData": {"mimeType": "image/jpeg", "data": "/9j/4AAQ"}})
+        );
+    }
+
+    #[test]
+    fn build_user_parts_multiple_images() {
+        let input = "Compare [IMAGE:data:image/png;base64,AAAA] and [IMAGE:data:image/webp;base64,BBBB]";
+        let parts = build_user_parts(input);
+        assert_eq!(parts.len(), 3);
+        let json: Vec<serde_json::Value> =
+            parts.iter().map(|p| serde_json::to_value(p).unwrap()).collect();
+        assert_eq!(json[0], serde_json::json!({"text": "Compare  and"}));
+        assert_eq!(
+            json[1],
+            serde_json::json!({"inlineData": {"mimeType": "image/png", "data": "AAAA"}})
+        );
+        assert_eq!(
+            json[2],
+            serde_json::json!({"inlineData": {"mimeType": "image/webp", "data": "BBBB"}})
+        );
+    }
+
+    #[test]
+    fn build_user_parts_image_only_no_text() {
+        let input = "[IMAGE:data:image/png;base64,AAAA]";
+        let parts = build_user_parts(input);
+        assert_eq!(parts.len(), 1);
+        let json = serde_json::to_value(&parts[0]).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"inlineData": {"mimeType": "image/png", "data": "AAAA"}})
+        );
+    }
+
+    #[test]
+    fn build_user_parts_non_data_uri_falls_back() {
+        // Non-data-URI markers are skipped; if only text remains, it's kept.
+        let input = "Check [IMAGE:/tmp/local.png]";
+        let parts = build_user_parts(input);
+        assert_eq!(parts.len(), 1);
+        // Falls back to original content since the marker wasn't a data URI.
+        let json = serde_json::to_value(&parts[0]).unwrap();
+        assert!(json.get("text").is_some());
     }
 }
